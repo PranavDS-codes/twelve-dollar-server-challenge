@@ -43,18 +43,26 @@ SQLITE_PATH=... JWT_SECRET=... HOST=0.0.0.0 PORT=80 bash start.sh
 Every request runs its own SQL and every token's signature and `exp`/`nbf` are verified per request
 (rule 5). A JWT without `exp` is accepted, as by jsonwebtoken, PyJWT and golang-jwt.
 
+HTTP hardening: a request carrying both `Content-Length` and `Transfer-Encoding`, or a transfer coding
+other than `chunked`, gets 400; `Connection` is read as a token list (`TE, close` closes); a client that
+pipelines without reading is dropped once 8 MB of replies are queued for it.
+
 ## Local results
 
 One pinned core of a 2.1 GHz Xeon VM, load from the other three cores over loopback, fresh seed copy.
-Full cross-language tables are in the standings page produced alongside this submission.
+Users: PR #13's C load generator replays the `bench/load.js` loop per user; steps of 10k, 20k, 40k, 80k,
+120k, 160k, 200k, 240k users, each on a fresh database with a 20 s warm-up, 15 s ramp and 45 s hold, passing
+with p95 < 500 ms, p99 < 1 s and < 1% errors. Every server in the table went through the same runs.
 
-| | Mixed req/s (load.js ratio, 256 keep-alive) | CPU µs/request | Users passing a 45 s hold (load.js loop) |
+| | Mixed req/s (load.js ratio, 256 keep-alive) | CPU µs/request | Users (load.js loop, 45 s hold) |
 |---|---:|---:|---:|
-| This server | 78,000–86,000 | 11.4–12.5 | 200,000 (p99 42 ms, 61% CPU, 68 MB RSS) |
-| Rust io_uring, PR #19 | 82,000–88,000 | 11.1–11.8 | see standings |
-| C++ EASTL io_uring, PR #32 | 81,000–83,000 | 11.7–11.9 | see standings |
+| This server | 78,000–86,000 | 11.4–12.5 | **≥ 240,000** (p99 31 ms, 69% CPU, 72 MB RSS; 240k is the load generator's ceiling here) |
+| Zig uSockets, PR #25 | 50,700 | 19.4 | 200,000 (fails at 220k) |
+| C++ EASTL io_uring, PR #32 | 81,000–83,000 | 11.7–11.9 | 180,000 (fails at 200k) |
+| Rust io_uring, PR #19 | 82,000–88,000 | 11.1–11.8 | 140,000 (fails at 160k) |
+| C io_uring, PR #26 | 78,600 | 12.4 | 140,000 (fails at 160k) |
 
-Tests: 42/42 official, 19 raw-socket HTTP edge cases (pipelining, partial reads and writes, chunked
+Tests: 42/42 official, 25 raw-socket HTTP edge cases (pipelining, partial reads and writes, chunked
 bodies, `Expect: 100-continue`, HTTP/1.0), and PR #13's 78 extra checks plus 16 concurrent likes.
 
 ## Credits

@@ -49,6 +49,7 @@
 #define BATCH_USEC 1000          /* ... or this long                                                 */
 #define MAX_HEAD 16384
 #define MAX_BODY (1 << 20)
+#define MAX_PENDING_OUT (8u << 20) /* unsent replies past this: the client is not reading, drop it */
 #define IDLE_SECONDS 180         /* connections idle this long are closed (sweep every 15 s)         */
 /* Keep-alive budget. A connection accepted while this many are open serves one request: its reply
  * carries "Connection: close" and the server closes right after sending, so its slot is free again.
@@ -1175,7 +1176,7 @@ static void serve_bytes(int ri, unsigned slot, conn_t *c, const char *data, size
             break;
         }
         int http11 = (le - sp2 - 1) == 8 && !memcmp(sp2 + 1, "HTTP/1.1", 8);
-        int keep = http11, chunked = 0, expect = 0;
+        int keep = http11, chunked = 0, expect = 0, has_cl = 0, conn_close_tok = 0, conn_keep_tok = 0;
         long long cl = 0;
         const char *authv = NULL;
         size_t authl = 0;
@@ -1195,6 +1196,7 @@ static void serve_bytes(int ri, unsigned slot, conn_t *c, const char *data, size
                     break;
                 case 'c':
                     if (nl == 14 && !strncasecmp(h, "content-length", 14)) {
+                        has_cl = 1;
                         cl = 0;
                         if (v == ve) cl = -1;
                         for (const char *d = v; d < ve; d++) {
@@ -1202,12 +1204,23 @@ static void serve_bytes(int ri, unsigned slot, conn_t *c, const char *data, size
                             cl = cl * 10 + (*d - '0');
                         }
                     } else if (nl == 10 && !strncasecmp(h, "connection", 10)) {
-                        if ((size_t)(ve - v) == 5 && !strncasecmp(v, "close", 5)) keep = 0;
-                        else if ((size_t)(ve - v) == 10 && !strncasecmp(v, "keep-alive", 10)) keep = 1;
+                        /* a comma-separated token list: "close", "keep-alive", "TE, close", ... */
+                        for (const char *t = v; t < ve;) {
+                            const char *te = memchr(t, ',', (size_t)(ve - t));
+                            if (!te) te = ve;
+                            const char *a = t, *b = te;
+                            while (a < b && (*a == ' ' || *a == '\t')) a++;
+                            while (b > a && (b[-1] == ' ' || b[-1] == '\t')) b--;
+                            if (b - a == 5 && !strncasecmp(a, "close", 5)) conn_close_tok = 1;
+                            else if (b - a == 10 && !strncasecmp(a, "keep-alive", 10)) conn_keep_tok = 1;
+                            t = te + 1;
+                        }
                     }
                     break;
                 case 't':
-                    if (nl == 17 && !strncasecmp(h, "transfer-encoding", 17)) chunked = 1;
+                    if (nl == 17 && !strncasecmp(h, "transfer-encoding", 17))
+                        /* only chunked is supported, and it must be the last coding */
+                        chunked = (ve - v) >= 7 && !strncasecmp(ve - 7, "chunked", 7) ? 1 : -1;
                     break;
                 case 'e':
                     if (nl == 6 && !strncasecmp(h, "expect", 6) && (size_t)(ve - v) == 12 &&
@@ -1217,6 +1230,16 @@ static void serve_bytes(int ri, unsigned slot, conn_t *c, const char *data, size
                 }
             }
             h = eol + 2;
+        }
+        if (conn_close_tok) keep = 0;
+        else if (conn_keep_tok) keep = 1;
+        if (chunked < 0 || (chunked && has_cl)) { /* unknown coding, or both framings (RFC 9112 6.3) */
+            mark_dirty(ri, slot, c);
+            respond_lit(&c->out, 400, 1, E_BAD_REQUEST);
+            c->batch_reqs++;
+            c->close_after = 1;
+            p = end;
+            break;
         }
         const char *body = he + 4;
         size_t bl = 0;
@@ -1298,6 +1321,20 @@ static void serve_bytes(int ri, unsigned slot, conn_t *c, const char *data, size
     }
 }
 
+/* Drops a connection now, even mid-send: shutdown() fails a send the client is not reading. */
+static void conn_abort(int ri, unsigned slot)
+{
+    ring_t *r = &rings[ri];
+    conn_t *c = &r->conns[slot];
+    if (!c->sending) { c->out.len = 0; conn_close(ri, slot); return; }
+    c->out.len = 0;
+    c->close_after = c->closing = 1;
+    struct io_uring_sqe *s = sqe_get(r);
+    io_uring_prep_shutdown(s, (int)slot, SHUT_RDWR);
+    s->flags |= IOSQE_FIXED_FILE;
+    io_uring_sqe_set_data64(s, ud(OP_CANCEL, ri, slot, 0));
+}
+
 static void on_recv(int ri, struct io_uring_cqe *cqe, unsigned slot, uint16_t gen)
 {
     ring_t *r = &rings[ri];
@@ -1309,7 +1346,8 @@ static void on_recv(int ri, struct io_uring_cqe *cqe, unsigned slot, uint16_t ge
         unsigned char *b = r->bufs + (size_t)bid * BUF_SIZE;
         if (res > 0 && c->open && c->gen == gen && !c->close_after) {
             c->last_active = now_sec;
-            if (c->in.len) {
+            if ((size_t)c->out.len + c->inflight.len > MAX_PENDING_OUT) conn_abort(ri, slot);
+            else if (c->in.len) {
                 buf_put(&c->in, b, (uint32_t)res);
                 serve_bytes(ri, slot, c, c->in.p, c->in.len);
             } else serve_bytes(ri, slot, c, (const char *)b, (size_t)res);
