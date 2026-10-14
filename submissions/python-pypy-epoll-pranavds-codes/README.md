@@ -15,53 +15,51 @@ bash build.sh          # byte-compiles server.py (nothing to download)
 SQLITE_PATH=... JWT_SECRET=... HOST=0.0.0.0 PORT=80 bash start.sh
 ```
 
-## Results (local, against the fastest Python entries)
+## Results (local, same harness for every entry)
 
-Measured in one 4-vCPU Ubuntu 24.04 VM (Intel Xeon @ 2.1 GHz), not the official droplet. Each server is
-pinned to **one CPU** (`taskset -c 0`) on a fresh copy of the seed; load generators run on the other three
-CPUs over loopback. Compared with [PR #1](https://github.com/arjaythedev/twelve-dollar-server-challenge/pull/1)
-(FastAPI), [PR #10](https://github.com/arjaythedev/twelve-dollar-server-challenge/pull/10) (optimized FastAPI)
-and [PR #13](https://github.com/arjaythedev/twelve-dollar-server-challenge/pull/13) (Granian RSGI, the fastest Python entry).
+Measured on one 4-vCPU Ubuntu 24.04 VM (Xeon @ 2.1 GHz), **not the official droplet**. Each server was pinned to
+one CPU on a fresh seed copy; load came from the other three CPUs over loopback. Every number in this section
+comes from the same harness, run on every entry.
+PR numbers refer to [the challenge repo](https://github.com/arjaythedev/twelve-dollar-server-challenge/pulls).
 
-### Users, the scored number (`bench/load.js` user model, 60 s ramp + 5-minute hold)
+### Users (capacity search, all Python entries)
 
-The sandbox caps every process at 20,000 descriptors, so above ~20k users every server must recycle
-connections. That is the regime the benchmark box is in above ~65k users (`LimitNOFILE=65535`).
+`bench/load.js`'s user loop (feed, 3–7 s, one post, 3–8 s, 15% like, 2% create, 5–15 s), replayed by PR #13's
+C load generator. Steps of 10k, 20k, 40k, 80k, 120k, 160k users, then one bisection. Each step uses a fresh
+database, a 20 s warm-up, a 15 s ramp and a 45 s hold. A step passes with p95 < 500 ms, p99 < 1 s and < 1% errors.
 
-| Users (5-min hold) | PR #13 Granian | This submission |
-|---:|---|---|
-| 60,000 | PASS: p99 81 ms, 87% CPU, 349 MB | |
-| 70,000 | **FAIL**: p99 1,440 ms, 92% CPU | |
-| 80,000 | **FAIL**: p99 1,836 ms, 94% CPU | |
-| 160,000 | | PASS: p99 296 ms, 81% CPU, 327 MB, 0 errors of 5.07 M |
-| 180,000 | | **PASS**: p99 481 ms, 89% CPU, 335 MB, 3 errors of 5.65 M |
-| 190,000 | | FAIL: p99 1,067 ms, 92% CPU |
-
-About **2.8× the users** of the fastest Python entry on the same CPU, with a fraction of its memory.
-With 60-second holds the picture is the same: Granian passes 80k and fails 100k; this server passes
-160k and fails 200k. Official k6 (`bench/load.js`, 4,000 VUs, server descriptor limit
-forced to 2,000 so k6 sees constant `Connection: close` recycling) reported 0.00% failed requests,
-p95 0.87 ms and p99 2.95 ms.
-
-### Throughput per CPU (wrk, 256 keep-alive connections, medians of 3 interleaved runs)
-
-Mixed workload = bench/load.js's request proportions (100 feed : 100 post : 15 like : 2 create), ids from the newest posts.
-
-| req/s (CPU per request) | PR #1 | PR #10 | PR #13 Granian | This submission |
+| Python entry | Max users | p99 at max | Server CPU at max | RSS at max |
 |---|---:|---:|---:|---:|
-| Mixed | 6,056 (164 µs) | 10,365 (96 µs) | 19,849 (50 µs) | **25,353 (39 µs)** |
-| `GET /feed` | 5,726 | 8,273 | 11,793 | **14,702** |
-| `GET /posts/:id` | 6,783 | 15,142 | 39,551 | **54,763** |
-| Mixed, new TCP connection per request | | | 17,366 (57 µs) | **24,460 (41 µs)** |
+| **this submission** | **140,000** (fails at 160k) | 694 ms | 85% | 263 MB |
+| #13 Granian RSGI (tbsvttr) | 60,000 (fails at 80k) | 409 ms | 90% | 354 MB |
+| #41 FastAPI + Granian (shawal-mbalire) | 40,000 (fails at 60k) | 359 ms | 62% | 371 MB |
+| #10 FastAPI (tejasnafde) | 20,000 (fails at 30k) | 22 ms | 38% | 249 MB |
+| #23 Litestar (przwr) | 20,000 (fails at 30k) | 573 ms | 55% | 246 MB |
+| #1 FastAPI (cknutson12) | 20,000 (fails at 30k) | 30 ms | 59% | 309 MB |
 
-### Memory
+That is **2.3× the users of the previous best Python entry** (#13). The last three fail on this sandbox's
+20,000-descriptor limit rather than on CPU; on the box, with 65,535 descriptors, they would get further.
 
-| | PR #13 Granian | This submission |
-|---|---:|---:|
-| Server memory per idle keep-alive connection (18,000 held) | 10.6 KB | **0.23 KB** |
-| RSS under the 160k-user hold | (fails at 70k; 461 MB there) | 327 MB |
+**After the final changes** (same harness, re-run): 140,000 users held for **5 minutes** (60 s ramp) passed with p95 23.6 ms, p99 231 ms, **0 errors in 4,439,905 requests**, 70% server CPU and 324 MB peak RSS; 150,000 users passed a 45 s hold (p99 224 ms, 76% CPU). The machine ran somewhat faster in this later session, so the table above, measured for every entry in one session, is the like-for-like comparison.
 
-Kernel socket memory (~3.9 KB per connection) is the same for every server.
+Across languages, on the same harness, 140k users ties the best Rust entry (#19) and beats the best entry
+of Fortran (100k), Kotlin (30k), Go, TypeScript/Bun, PHP/Swoole, Ruby, Dart, Erlang (20k each), C# (15k) and Java (< 10k).
+
+### Throughput per CPU
+
+wrk on 256 keep-alive connections, 10 s per run after a 20 s warm-up. Mixed = load.js proportions
+(100 feed : 100 post : 15 like : 2 create). Two interleaved runs each (ours, #13, ours, #13); the table shows the mean.
+
+| | #13 Granian | this submission | change |
+|---|---:|---:|---:|
+| Mixed req/s | 19,662 | **25,925** | **+32%** |
+| CPU per mixed request, µs | 51.2 | **38.5** | **-25%** |
+| Mixed p99, ms | 24.4 | **17.9** | **-27%** |
+| `GET /feed` req/s | 14,920 | **17,468** | **+17%** |
+| `GET /posts/:id` req/s | 42,448 | **66,194** | **+56%** |
+| Mixed, new TCP connection per request (64 conns), req/s | 16,993 | **24,520** | **+44%** |
+| Server memory per idle keep-alive connection (18,000 held), bytes | 10,340 | **262** | 39× less |
+| RSS after the throughput runs, MB | 64 | 219 | +245% (PyPy JIT and GC nursery) |
 
 ## Where the time goes, and what each change bought
 
@@ -88,8 +86,8 @@ Profiles (`perf`, server CPU only) of the obvious "fast Python" design show the 
    arrived. `accept4(SOCK_NONBLOCK)` (cffi) skips two `fcntl`s. The new socket is read and answered
    immediately, and when it is being retired it is closed without ever entering epoll: **4 syscalls**
    per request on a fresh connection (`accept4`, `read`, `write`, `close`), down from 8+.
-6. **~230 bytes per connection.** No per-connection objects: a set entry, plus dict entries only
-   while a request or reply is partial. Granian holds ~10.6 KB per keep-alive socket.
+6. **~260 bytes per connection.** No per-connection objects: a set entry, plus dict entries only
+   while a request or reply is partial. Granian holds ~10.3 KB per keep-alive socket.
 7. **HMAC via OpenSSL's one-shot `HMAC()`** through cffi into a reused buffer: 1.7 µs instead of
    PyPy's `hmac.digest` at 11.4 µs. PyPy's version also leaked ~2 KB per call until the next major GC
    (anonymous memory grew ~28 MB/s under a like-only load).
@@ -110,6 +108,7 @@ decoding that header (a pure function of its bytes), never the signature check.
 | Bigger `wal_autocheckpoint` (4,000-16,000 pages) | +13-19% on create-only load, but p99 rose to 96 ms (create-only) and 200 ms (mixed): fewer, bigger stalls. Kept SQLite's 1,000 |
 | Granian / uvloop / any ASGI | The framework layer is the cost being removed; see the table above |
 | Group commit for likes/creates | Writes are ~8% of requests; savings estimated at under 1% of CPU. Not worth the latency coupling |
+| Feed as range scans in SQL (newest 20 ids, then one `BETWEEN` scan of likes with `GROUP BY`) | Same output; 17% faster on the fresh seed (98 → 82 µs) but 4.7× slower (331 → 1,543 µs) once recent posts collect likes, from SQLite's temp B-tree for the `GROUP BY`. Kept the correlated count |
 
 ### Considered and deliberately not done
 
@@ -124,7 +123,7 @@ decoding that header (a pure function of its bytes), never the signature check.
   server's kernel time in the profiles) and hides NIC/interrupt costs. Absolute numbers on the droplet will
   differ; the ratios between servers are what these tables show.
 - The sandbox's 20,000-descriptor limit forced more recycling than the droplet will (budget 19,744
-  here, 25,000 there), which penalizes Granian as well. Its own budget is 40,000 descriptors at ~10.6 KB each.
+  here, 25,000 there). It penalizes every entry; the FastAPI and Litestar entries fail on it outright.
 - A JWT without `exp` is accepted, as by jsonwebtoken, PyJWT and golang-jwt. PR #13's stricter
   extra checks flag that one case; every other one of its 78 HTTP checks plus 16 concurrent likes passes.
 - PyPy RSS starts at ~200 MB (JIT and GC nursery) and stayed flat over the 5-minute holds.
@@ -136,7 +135,7 @@ bash seed/make-seed.sh
 bash test/run.sh submissions/python-pypy-epoll-pranavds-codes                 # 42/42
 cd submissions/python-pypy-epoll-pranavds-codes
 bench/throughput.sh . mix 256 10            # needs wrk; CLOSE=close for a connection per request
-bench/capacity.sh . 160000 300 60           # user model; needs cc; shards of 16k users
+bench/capacity.sh . 140000 300 60           # user model; needs cc; shards of 16k users
 python3 bench/http_edge.py 3100 "$TOKEN"    # against a running server on a fresh seed copy
 ```
 
