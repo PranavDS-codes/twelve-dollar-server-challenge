@@ -394,24 +394,31 @@ def on_data(fd, data):
         chunked = False
         if len(hdr) > 2:
             i = hdr.find(b"\r\ncontent-length:")
+            t = hdr.find(b"\r\ntransfer-encoding:")
             if i >= 0:
                 try:
                     cl = int(hdr[i + 17:hdr.find(b"\r\n", i + 17)])
                 except ValueError:
                     cl = -1
-                if cl < 0 or cl > MAX_BODY:
+                if cl < 0 or cl > MAX_BODY or t >= 0:  # both framings at once: refuse (RFC 9112 6.3)
                     out.append(BAD_REQUEST)
                     keep = False
                     break
-            elif b"\r\ntransfer-encoding:" in hdr:
+            elif t >= 0:
+                if not hdr[t + 20:hdr.find(b"\r\n", t + 20)].rstrip().endswith(b"chunked"):
+                    out.append(BAD_REQUEST)
+                    keep = False
+                    break
                 chunked = True
             i = hdr.find(b"\r\nauthorization:")
             if i >= 0:
                 auth = data[le + i + 16:le + hdr.find(b"\r\n", i + 16)].strip()
+            i = hdr.find(b"\r\nconnection:")
+            tokens = hdr[i + 13:hdr.find(b"\r\n", i + 13)].replace(b" ", b"").replace(b"\t", b"").split(b",") if i >= 0 else ()
             if line[sp2 + 1:] == b"HTTP/1.1":
-                if b"\r\nconnection: close" in hdr:
+                if b"close" in tokens:
                     keep = False
-            elif b"\r\nconnection: keep-alive" not in hdr:
+            elif b"keep-alive" not in tokens:
                 keep = False
         elif line[sp2 + 1:] != b"HTTP/1.1":
             keep = False
@@ -534,7 +541,11 @@ def on_readable(fd):
         return
     if fd in pending_out:
         # Do not process further requests until the previous response is out.
-        pending_in[fd] = pending_in.get(fd, b"") + data
+        buf = pending_in.get(fd, b"") + data
+        if len(buf) > MAX_HEAD + MAX_BODY:  # a client that sends but never reads
+            drop(fd)
+            return
+        pending_in[fd] = buf
         return
     prev = pending_in.pop(fd, None)
     if prev is not None:

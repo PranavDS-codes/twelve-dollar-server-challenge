@@ -70,7 +70,8 @@ Profiles (`perf`, server CPU only) of the obvious "fast Python" design show the 
 1. **No framework, no ASGI/RSGI.** One epoll loop over raw descriptors parses HTTP with `bytes.find`
    and slicing, routes with byte comparisons and writes each response with one `write()`. Pipelining,
    partial reads, partial writes (EPOLLOUT), chunked bodies, `Expect: 100-continue`, HTTP/1.0 and
-   `Connection: close` are handled (`bench/http_edge.py`, 19 checks).
+   `Connection: close` are handled, a request with both `Content-Length` and `Transfer-Encoding` is refused,
+   and a client that sends without ever reading is cut off at 1 MB + 16 KB of queued input (`bench/http_edge.py`, 25 checks).
 2. **PyPy instead of CPython.** Under CPython this exact server only ties Granian (the interpreter is
    23% of CPU). Under PyPy the JIT shrinks Python to ~10% of CPU: +44% mixed throughput, +45% on
    single posts. What remains is SQLite (~43%) and the kernel's TCP stack (~38%).

@@ -174,5 +174,49 @@ r = read_responses(s, 1)
 check("garbage request -> 400", r and r[0][0] == 400, r[:1])
 s.close()
 
+# 12. Content-Length together with Transfer-Encoding, and an unknown transfer coding, are refused
+for name, req in [("Content-Length + Transfer-Encoding -> 400",
+                   b"POST /posts HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"),
+                  ("Transfer-Encoding: gzip -> 400",
+                   b"POST /posts HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n")]:
+    s = conn()
+    s.sendall(req)
+    r = read_responses(s, 1)
+    check(name, r and r[0][0] == 400, r[:1])
+    s.close()
+
+# 13. Connection header is a token list
+s = conn()
+s.sendall(b"GET /posts/1 HTTP/1.1\r\nHost: x\r\nConnection: TE, close\r\n\r\n")
+r = read_responses(s, 1)
+rest = s.recv(100)
+check("Connection: TE, close closes", r and r[0][1].get("connection") == "close" and rest == b"", (r[:1], rest))
+s.close()
+s = conn()
+s.sendall(b"GET /posts/1 HTTP/1.1\r\nHost: x\r\nConnection: closed-captions\r\n\r\nGET /posts/2 HTTP/1.1\r\nHost: x\r\n\r\n")
+r = read_responses(s, 2)
+check("Connection: closed-captions keeps alive", [x[0] for x in r] == [200, 200], [x[0] for x in r])
+s.close()
+
+# 14. a client that pipelines without ever reading is cut off, not buffered without limit
+s = conn()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+sent = 0
+s.settimeout(10)
+try:
+    while sent < 64 << 20:
+        s.sendall(b"GET /feed HTTP/1.1\r\nHost: x\r\n\r\n" * 1000)
+        sent += 32000
+    cut = False
+except OSError:
+    cut = True
+check("non-reading client cut off", cut, sent)
+s.close()
+s = conn()
+s.sendall(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
+r = read_responses(s, 1)
+check("healthy after non-reading client", r and r[0][0] == 200)
+s.close()
+
 print(f"passed={ok} failed={fail}")
 sys.exit(1 if fail else 0)
