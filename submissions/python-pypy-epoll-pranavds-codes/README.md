@@ -40,7 +40,7 @@ database, a 20 s warm-up, a 15 s ramp and a 45 s hold. A step passes with p95 < 
 That is **2.3× the users of the previous best Python entry** (#13). The last three fail on this sandbox's
 20,000-descriptor limit rather than on CPU; on the box, with 65,535 descriptors, they would get further.
 
-**After the final changes** (same harness, re-run): 140,000 users held for **5 minutes** (60 s ramp) passed with p95 23.6 ms, p99 231 ms, **0 errors in 4,439,905 requests**, 70% server CPU and 324 MB peak RSS; 150,000 users passed a 45 s hold (p99 224 ms, 76% CPU). The machine ran somewhat faster in this later session, so the table above, measured for every entry in one session, is the like-for-like comparison.
+**Official profile** (`bench/load.js` loop, 60 s ramp, 5-minute hold, re-run after the final changes): **160,000 users pass** with p95 173 ms, p99 310 ms, 1 error in 5,059,796 requests, 84% server CPU and 323 MB peak RSS. At 170,000 users p99 was 1,075 ms, just over the limit. The machine ran somewhat faster in this later session, so the table above, measured for every entry in one session, is the like-for-like comparison.
 
 Across languages, on the same harness, 140k users ties the best Rust entry (#19) and beats the best entry
 of Fortran (100k), Kotlin (30k), Go, TypeScript/Bun, PHP/Swoole, Ruby, Dart, Erlang (20k each), C# (15k) and Java (< 10k).
