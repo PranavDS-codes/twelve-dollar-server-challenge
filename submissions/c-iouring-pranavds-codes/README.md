@@ -62,6 +62,9 @@ with p95 < 500 ms, p99 < 1 s and < 1% errors. Every server in the table went thr
 | Rust io_uring, PR #19 | 82,000–88,000 | 11.1–11.8 | 140,000 (fails at 160k) |
 | C io_uring, PR #26 | 78,600 | 12.4 | 140,000 (fails at 160k) |
 
+Official profile (`bench/load.js` loop, 60 s ramp, 5-minute hold): **240,000 users pass** with p95 19 ms,
+p99 52 ms, 427 errors in 7,615,790 requests (0.006%), 69% server CPU and 116 MB peak RSS.
+
 Tests: 42/42 official, 25 raw-socket HTTP edge cases (pipelining, partial reads and writes, chunked
 bodies, `Expect: 100-continue`, HTTP/1.0), and PR #13's 78 extra checks plus 16 concurrent likes.
 
